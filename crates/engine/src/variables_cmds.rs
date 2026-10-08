@@ -231,9 +231,29 @@ fn replace_pixels(doc: &mut Document, layer: LayerId, path: &str, method: PixelM
     Ok(())
 }
 
+/// The image files applying `set` reads: its Pixel Replacement values.
+fn pixel_files(vars: &Variables, set: &DataSet) -> Vec<String> {
+    set.values
+        .iter()
+        .filter_map(|dv| match (&vars.def(&dv.variable)?.kind, &dv.value) {
+            (VarKind::PixelReplacement { .. }, VarValue::Pixels(path)) => Some(path.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn apply_data_set(s: &mut Session, p: &Value) -> Result<Value> {
     let (set, idx) = resolve_set(s, p, "image.applyDataSet")?;
     let vars = s.active().ok_or(EngineError::NoDocument)?.doc.variables.clone();
+    // Text and visibility values change only the document; a Pixel Replacement value reads a host
+    // file. An untrusted session's gate judges those files (computed here, never taken from the
+    // caller) before anything changes.
+    let files = pixel_files(&vars, &set);
+    if let Some(gate) = s.authorize
+        && !files.is_empty()
+    {
+        gate("image.applyDataSet", &json!({"pixelFiles": files}))?;
+    }
     s.edit(&format!("Apply Data Set \"{}\"", set.name), |doc, _| apply_to_doc(doc, &vars, &set))?;
     set_vars(s, |v| v.active = Some(idx))?;
     Ok(json!({"applied": set.name, "index": idx}))
@@ -401,7 +421,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "image.applyDataSet",
             "Apply Data Set…",
             &["Image"],
-            "{name|index} → {applied, index}: sets layer visibility/text/pixels from the data set (one history step)",
+            "{name|index} → {applied, index}: sets layer visibility/text/pixels from the data set (one history step). Over automation, a set with Pixel Replacement values (host image files) is refused",
             |s, p| apply_data_set(s, p)
         ),
         spec!(

@@ -38,6 +38,8 @@ Automation is a privilege boundary because requests can cause filesystem access,
   preference sections, including paths with leading or repeated dots. It refuses whole-preferences
   updates and those sections; individual safe preference keys remain available.
 - Applying the Preferences dialog with `ui.dialog.apply` is deliberately refused over automation.
+- `image.applyDataSet` is judged by what the data set reads: text and visibility values apply,
+  while a Pixel Replacement value (a host image file) is refused.
 
 ## Known limitations
 

@@ -178,8 +178,8 @@ pub fn authorize_engine_command(id: &str, params: &Value) -> Result<(), Automati
                 | "layer.videoLayers.newVideoLayerFromFile"
                 | "layer.videoLayers.replaceFootage"
                 | "layer.videoLayers.reloadFrame"
-                | "image.applyDataSet"
         )
+        || applies_pixel_files(id, params)
         || command_uses_ambient_path(id, params)
         || profile_command_may_read_ambient(id, params)
         || preferences_may_grant_ambient_paths(id, params)
@@ -255,6 +255,12 @@ fn preference_uses_ambient_filesystem(path: &str) -> bool {
     // judge the first non-empty one; no segment at all is the whole-preferences update.
     let Some(section) = path.split('.').find(|segment| !segment.is_empty()) else { return true };
     matches!(section, "colorSettings" | "scriptEvents" | "historyLog" | "plugIns" | "scratchDisks")
+}
+
+/// `image.applyDataSet` re-checks itself with the Pixel Replacement files it would read
+/// (`pixelFiles`); text and visibility data sets touch only the document.
+fn applies_pixel_files(id: &str, params: &Value) -> bool {
+    id == "image.applyDataSet" && params.get("pixelFiles").is_some_and(|files| !files.is_null())
 }
 
 fn command_uses_ambient_path(id: &str, params: &Value) -> bool {
@@ -443,7 +449,6 @@ mod tests {
             "layer.smartObjects.exportContents",
             "measurementLog.export",
             "layer.videoLayers.reloadFrame",
-            "image.applyDataSet",
             "edit.colorSettings",
         ] {
             assert!(authorize_engine_command(id, &serde_json::json!({})).is_err());
@@ -463,6 +468,40 @@ mod tests {
         assert!(authorize_engine_step("file.open", &serde_json::json!({})).is_err());
         assert!(authorize_engine_step("actions.play", &serde_json::json!({})).is_ok());
         assert!(authorize_desktop_engine_step("file.saveACopy", &serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn apply_data_set_is_judged_by_the_files_it_reads() {
+        use serde_json::json;
+        // Issue #806: text and visibility data sets apply over automation; Pixel Replacement
+        // values read host files and stay refused.
+        assert!(authorize_engine_command("image.applyDataSet", &json!({"name": "a"})).is_ok());
+        assert!(authorize_engine_command("image.applyDataSet", &json!({"pixelFiles": ["x.png"]})).is_err());
+        for gate in [authorize_engine_step as fn(&str, &Value) -> photocraft_engine::Result<()>, authorize_desktop_engine_step] {
+            let mut session = photocraft_engine::Session::new();
+            session.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+            let layer = session.execute("layer.new.layer", json!({})).ok().and_then(|_| session.active().and_then(|d| d.active_layer)).unwrap();
+            session
+                .execute(
+                    "image.variables.define",
+                    json!({"defs": [{"name": "show", "layer": layer.0, "type": "visibility"}, {"name": "img", "layer": layer.0, "type": "pixelReplacement"}]}),
+                )
+                .unwrap();
+            session
+                .execute(
+                    "image.variables.dataSets",
+                    json!({"dataSets": [
+                        {"name": "hide", "values": [{"variable": "show", "kind": "visibility", "value": false}]},
+                        {"name": "photo", "values": [{"variable": "img", "kind": "pixels", "value": "outside.png"}]},
+                    ]}),
+                )
+                .unwrap();
+            session.authorize = Some(gate);
+            session.execute("image.applyDataSet", json!({"name": "hide"})).unwrap();
+            assert!(!session.active().unwrap().doc.layer(layer).unwrap().visible);
+            let e = session.execute("image.applyDataSet", json!({"name": "photo"})).unwrap_err();
+            assert!(e.to_string().contains("image.applyDataSet"), "{e}");
+        }
     }
 
     #[test]

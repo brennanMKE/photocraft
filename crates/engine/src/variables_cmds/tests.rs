@@ -152,6 +152,45 @@ fn export_data_sets_as_files() {
 }
 
 #[test]
+fn apply_data_set_asks_the_gate_only_about_the_pixel_files_it_reads() {
+    fn deny_pixel_files(id: &str, p: &Value) -> Result<()> {
+        match p.get("pixelFiles") {
+            Some(files) => Err(EngineError::Other(format!("`{id}` may not read {files}"))),
+            None => Ok(()),
+        }
+    }
+    let (mut s, photo, badge, title) = session();
+    s.execute(
+        "image.variables.define",
+        json!({"defs": [
+            {"name": "show", "layer": badge.0, "type": "visibility"},
+            {"name": "headline", "layer": title.0, "type": "textReplacement"},
+            {"name": "img", "layer": photo.0, "type": "pixelReplacement"},
+        ]}),
+    )
+    .unwrap();
+    s.execute(
+        "image.variables.dataSets",
+        json!({"dataSets": [
+            {"name": "words", "values": [{"variable": "show", "kind": "visibility", "value": false}, {"variable": "headline", "kind": "text", "value": "New"}]},
+            {"name": "photo", "values": [{"variable": "img", "kind": "pixels", "value": "/elsewhere/cover.png"}]},
+        ]}),
+    )
+    .unwrap();
+    s.authorize = Some(deny_pixel_files);
+    // Text and visibility apply under the gate.
+    s.execute("image.applyDataSet", json!({"name": "words"})).unwrap();
+    assert!(!doc(&s).layer(badge).unwrap().visible);
+    assert!(matches!(&doc(&s).layer(title).unwrap().content, LayerContent::Text(t) if t.text == "New"));
+    // A Pixel Replacement value is judged by the files it reads, before any change.
+    let steps = s.active().unwrap().history.past_len();
+    let e = s.execute("image.applyDataSet", json!({"name": "photo"})).unwrap_err();
+    assert!(e.to_string().contains("may not read") && e.to_string().contains("/elsewhere/cover.png"), "{e}");
+    assert_eq!(s.active().unwrap().history.past_len(), steps, "nothing applied");
+    assert_eq!(doc(&s).variables.active, Some(0), "the active data set is still the applied one");
+}
+
+#[test]
 fn pixel_replacement_changes_the_layer() {
     let (mut s, photo, _b, _t) = session();
     // Make a 8x8 solid-blue PNG to drop in.
