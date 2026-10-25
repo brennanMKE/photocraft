@@ -1386,11 +1386,11 @@ fn redraw_area_scenarios(b: &mut Bench, sz: &Sizes) {
 /// Paste Into a 5 % selection (untimed), then times the next frame. Paste Into is a compound
 /// command (several revisions), so the frame's refresh goes through the real `damage_since` path.
 fn paste_into_frame_scenario(b: &mut Bench, name: &str, w: u32, h: u32) {
+    // 0.224² ≈ 5 % of the canvas.
+    let sel = json!({"x": w / 2, "y": h / 2, "width": w * 224 / 1000, "height": h * 224 / 1000});
     let built = open_photo(w, h).and_then(|mut s| {
         exec(&mut s, "select.rect", json!({"x": w / 10, "y": h / 10, "width": w / 5, "height": h / 5}))?;
         exec(&mut s, "edit.copy", json!({}))?;
-        // 0.224² ≈ 5 % of the canvas.
-        exec(&mut s, "select.rect", json!({"x": w / 2, "y": h / 2, "width": w * 224 / 1000, "height": h * 224 / 1000}))?;
         Ok(s)
     });
     let mut s = match built {
@@ -1411,6 +1411,10 @@ fn paste_into_frame_scenario(b: &mut Bench, name: &str, w: u32, h: u32) {
     let run = (|| -> Res<()> {
         for i in 0..=b.reps.max(1) {
             let rev = |h: &egui_kittest::Harness<'_, photocraft_ui_egui::PhotocraftApp>| h.state().session.active().map(|d| d.revision);
+            // Untimed: Paste Into turns the selection into the pasted layer's
+            // mask, so each sample re-creates the same ~5 % selection. The
+            // clipboard is not consumed.
+            harness.state_mut().run("select.rect", sel.clone())?;
             let before = rev(&harness).ok_or("no document")?;
             harness.state_mut().run("edit.pasteSpecial.pasteInto", json!({}))?;
             let after = rev(&harness).ok_or("no document")?;
