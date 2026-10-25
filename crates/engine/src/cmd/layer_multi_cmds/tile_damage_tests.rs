@@ -359,6 +359,44 @@ fn stroke_path_damage_spans_every_subpath() {
     assert_eq!(s.whole_redraws, 0);
 }
 
+/// Pattern Stamp copies its pattern into the document on first use: a pattern no layer
+/// refers to draws nothing, so a multi-subpath Stroke Path stays bounded.
+#[test]
+fn a_new_unreferenced_pattern_keeps_stroke_path_bounded() {
+    let mut s = session(1024, 768);
+    layer_with(&mut s, &[(Rect::new(0, 0, 1024, 768), [0.5, 0.5, 0.5, 1.0])]);
+    let path = json!({"subpaths": [{"knots": [[20, 20], [80, 20], [80, 80]]}, {"knots": [[800, 600], [900, 600], [900, 700]]}]});
+    s.execute("path.set", json!({ "path": path })).unwrap();
+    let n = doc(&s).patterns.len();
+    let p = json!({"tool": "patternStamp", "size": 16, "hardness": 100, "pattern": "Checkerboard", "scale": 100, "aligned": true});
+    let (_, d) = command_damage(&mut s, "path.stroke", p);
+    assert!(doc(&s).patterns.len() > n, "the stamp added its pattern");
+    assert!(d.contains(50, 20) && d.contains(850, 600), "both subpaths: {d:?}");
+    assert_eq!(s.whole_redraws, 0);
+}
+
+/// A pattern that an existing layer refers to (here a fill layer whose pattern was missing)
+/// changes that layer's pixels when it is added: not bounded by the tile diff.
+#[test]
+fn a_new_pattern_a_layer_refers_to_is_unbounded() {
+    let mut s = session(400, 300);
+    s.execute("layer.newFillLayer.pattern", json!({"pattern": "Checkerboard"})).unwrap();
+    // Without its pixel cache, so both sides render the fill from the library.
+    let mut with = (*doc(&s)).clone();
+    with.layers.iter_mut().for_each(|l| l.fill_cache = None);
+    let mut without = with.clone();
+    without.patterns.clear();
+    assert!(!same_pixels(&without, &with), "the fill layer draws only with its pattern");
+    assert_eq!(step_damage(&without, &with), None);
+    // Unchanged libraries, and an unreferenced addition, stay pixel-equal.
+    assert_eq!(step_damage(&with, &with), Some(Rect::EMPTY));
+    let plain = doc(&session(400, 300));
+    let mut more = (*plain).clone();
+    more.patterns = with.patterns.clone();
+    assert_eq!(step_damage(&plain, &more), Some(Rect::EMPTY));
+    assert!(unchanged_outside(&plain, &more, Rect::EMPTY));
+}
+
 #[test]
 fn a_failed_compound_reports_no_change() {
     let mut s = session(600, 400);
@@ -439,6 +477,10 @@ fn no_command_redraws_the_whole_document_for_a_small_edit() {
         ("layer.setProps", json!({"layer": small.0, "opacity": 0.5})),
         ("layer.setProps", json!({"layer": small.0, "visible": false})),
         ("layer.setProps", json!({"layer": small.0, "visible": true})),
+        ("layer.translate", json!({"layer": small.0, "dx": 20, "dy": 10})),
+        // Show Only hides the full-canvas base: a large change, so not counted either way.
+        ("layer.showOnly", json!({"layer": small.0})),
+        ("layer.showOnly", json!({"layer": small.0})),
         ("layer.arrange.bringForward", json!({})),
         ("layer.arrange.sendBackward", json!({})),
         ("layer.setProps", json!({"layer": other.0, "clipped": true})),
