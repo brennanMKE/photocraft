@@ -173,13 +173,13 @@ fn moves_and_layer_props_report_only_their_area() {
     assert_eq!(damage(&s), Some(Rect::new(15, 7, 25, 17)));
     s.execute("layer.setProps", json!({"layer": a.0, "opacity": 0.5, "blend": "Multiply"})).unwrap();
     assert_eq!(damage(&s), Some(Rect::new(15, 7, 25, 17)));
-    // Clipping changes reach the layers around: everything.
+    // Clipping a pixel layer with nothing clipped to it changes only where it draws (#9329).
     s.execute("layer.setProps", json!({"layer": a.0, "clipped": true})).unwrap();
-    assert_eq!(damage(&s), None);
-    // An adjustment layer changes everything beneath it.
+    assert_eq!(damage(&s), Some(Rect::new(15, 7, 25, 17)));
+    // An adjustment layer changes everything beneath it: here the Background, the canvas.
     let adj = s.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap()["layer"].as_u64().unwrap();
     s.execute("layer.setProps", json!({"layer": adj, "visible": false})).unwrap();
-    assert_eq!(damage(&s), None);
+    assert_eq!(damage(&s), Some(doc(&s).bounds()));
     // The Background (opaque everywhere): everything.
     let bg = doc(&s).layers[0].id;
     s.execute("layer.setProps", json!({"layer": bg.0, "opacity": 0.5})).unwrap();
@@ -266,11 +266,11 @@ fn new_layers_that_change_clipping_recomposite_everything() {
     based.layers.insert(under, l);
     assert_eq!(step_damage(&before, &based), None);
     assert_eq!(step_damage(&based, &before), None);
-    // An adjustment reaches every pixel below it.
+    // An adjustment reaches every pixel below it: here the Background, the canvas.
     let mut adjusted = before.clone();
     adjusted.insert_above(None, Layer::new("inv", LayerContent::Adjustment(photocraft_doc::Adjustment::Invert)));
-    assert_eq!(step_damage(&before, &adjusted), None);
-    assert_eq!(step_damage(&adjusted, &before), None);
+    assert_eq!(step_damage(&before, &adjusted), Some(before.bounds()));
+    assert_eq!(step_damage(&adjusted, &before), Some(before.bounds()));
     // Empty layers draw nothing, in any blend mode.
     let mut styled = before.clone();
     let mut l = Layer::raster("styled", styled.pixel_format());
@@ -340,11 +340,11 @@ fn toggling_a_clipped_adjustment_damages_only_its_base() {
         s.execute("layer.setProps", json!({"layer": adj.0, "visible": false})).unwrap();
         assert_eq!(damage(&s), Some(base_rect));
         assert_eq!(patched(&s, &shown), hidden);
-        // Unclipped, the adjustment still reaches the whole canvas.
+        // Unclipped over the Background, the adjustment still reaches the whole canvas.
         s.execute("layer.setProps", json!({"layer": adj.0, "visible": true})).unwrap();
         s.execute("layer.releaseClippingMask", json!({"layer": adj.0})).unwrap();
         s.execute("layer.hideLayers", json!({"layer": adj.0})).unwrap();
-        assert_eq!(damage(&s), None);
+        assert_eq!(damage(&s), Some(doc(&s).bounds()));
     }
 }
 
@@ -1127,13 +1127,144 @@ fn undo_of_clipping_or_channel_exclusion_composites_everything() {
     let _ = rect_layer(&mut s, Rect::new(10, 10, 20, 20));
     let b = rect_layer(&mut s, Rect::new(12, 12, 30, 30));
     select_all(&mut s, &[b]);
-    // Clipping reaches the layers clipped above, outside this layer's bounds.
-    s.execute("layer.setProps", json!({"clipped": true})).unwrap();
+    // #9329: on a pixel layer both are bounded: clipping by the layer (and the clipped layers
+    // above it), channel exclusion by the layer (per pixel where it draws).
+    for p in [json!({"clipped": true}), json!({"channels": [true, false, true]})] {
+        let before = doc(&s).clone();
+        s.execute("layer.setProps", p.clone()).unwrap();
+        let after = doc(&s).clone();
+        s.undo();
+        let r = damage(&s).unwrap_or_else(|| panic!("{p} is bounded"));
+        assert!(r.width() < 100 && unchanged_outside(&after, &before, r), "{p}: {r:?}");
+    }
+    // On a group they change how it composites its children: everything.
+    s.execute("layer.groupLayers", json!({})).unwrap();
+    let g = s.active().unwrap().active_layer.unwrap();
+    assert!(doc(&s).layer(g).unwrap().children().is_some());
+    s.execute("layer.setProps", json!({"layer": g.0, "clipped": true})).unwrap();
     s.undo();
-    assert_eq!(damage(&s), None, "a clipping change recomposites everything");
-    s.execute("layer.setProps", json!({"channels": [true, false, true]})).unwrap();
+    assert_eq!(damage(&s), None, "a group's clipping change recomposites everything");
+    s.execute("layer.setProps", json!({"layer": g.0, "channels": [true, false, true]})).unwrap();
     s.undo();
-    assert_eq!(damage(&s), None, "an excluded-channel change recomposites everything");
+    assert_eq!(damage(&s), None, "a group's excluded-channel change recomposites everything");
+}
+
+/// A new adjustment layer of `kind` (made while `s`'s selection is active, so it masks it).
+fn adjustment(s: &mut Session, kind: &str) -> LayerId {
+    LayerId(s.execute(&format!("layer.newAdjustmentLayer.{kind}"), json!({})).unwrap()["layer"].as_u64().unwrap())
+}
+
+/// Run `id` with `p`, then undo and redo it: each step's damage is bounded, smaller than the
+/// canvas, and covers every pixel it changed (`unchanged_outside`). Returns the step's damage.
+fn bounded_step(s: &mut Session, id: &str, p: serde_json::Value) -> Rect {
+    let before = doc(s).clone();
+    s.execute(id, p).unwrap();
+    let after = doc(s).clone();
+    let canvas = after.bounds();
+    let check = |s: &Session, from: &Document, to: &Document, what: &str| {
+        let r = damage(s).unwrap_or_else(|| panic!("{id} {what}: bounded"));
+        assert!(r.width() * r.height() < canvas.width() * canvas.height(), "{id} {what}: {r:?}");
+        assert!(unchanged_outside(from, to, r), "{id} {what}: {r:?} misses changed pixels");
+        r
+    };
+    let r = check(s, &before, &after, "");
+    s.undo();
+    check(s, &after, &before, "undo");
+    s.redo();
+    check(s, &before, &after, "redo");
+    r
+}
+
+/// #9329, #6533: in a 32-bit document hiding a masked adjustment damages only its mask, over
+/// an opaque Background too. An integer document rounds the whole backdrop after every
+/// visible adjustment layer (#9033), so there it still damages the canvas.
+#[test]
+fn hiding_a_masked_adjustment_damages_only_its_mask() {
+    for depth in [32, 8] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 800, "height": 600, "depth": depth})).unwrap();
+        let c = rect_layer(&mut s, Rect::new(50, 50, 700, 500));
+        s.execute("layer.setProps", json!({"layer": c.0, "opacity": 0.37})).unwrap();
+        let reveal = Rect::new(520, 330, 560, 370);
+        s.execute("select.rect", json!({"x": reveal.x0, "y": reveal.y0, "width": 40, "height": 40})).unwrap();
+        let adj = adjustment(&mut s, "invert");
+        s.execute("select.deselect", json!({})).unwrap();
+        assert!(doc(&s).layer(adj).unwrap().mask.is_some());
+        if depth == 32 {
+            let r = bounded_step(&mut s, "layer.setProps", json!({"layer": adj.0, "visible": false}));
+            assert!(r.contains_rect(&reveal), "{r:?}");
+        } else {
+            s.execute("layer.setProps", json!({"layer": adj.0, "visible": false})).unwrap();
+            assert_eq!(damage(&s), Some(doc(&s).bounds()));
+        }
+    }
+}
+
+/// #9329, #6528: Show Only This Layer, in a document whose only layer that could reach
+/// everywhere was an adjustment, is bounded by where the layers draw.
+#[test]
+fn show_only_with_an_adjustment_is_bounded() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 80, "depth": 8, "background": "transparent"})).unwrap();
+    let a = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(40, 20, 60, 50));
+    s.execute("layer.setProps", json!({"layer": b.0, "opacity": 0.37})).unwrap();
+    let _ = adjustment(&mut s, "invert");
+    let r = bounded_step(&mut s, "layer.showOnly", json!({"layer": a.0}));
+    assert_eq!(r, Rect::new(10, 10, 60, 50));
+}
+
+/// #9329: Bring Forward damages only where the moved layer draws, not the whole canvas.
+#[test]
+fn bring_forward_damages_only_the_moved_layer() {
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    let _b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    let _c = rect_layer(&mut s, Rect::new(60, 60, 70, 70));
+    select_all(&mut s, &[a]);
+    let r = bounded_step(&mut s, "layer.arrange.bringForward", json!({}));
+    assert_eq!(r, Rect::new(10, 10, 30, 30));
+}
+
+/// #9329: Send Backward, its undo and its redo each damage only the moved layer; an
+/// adjustment moving past a layer reaches as far as the layers beneath it at either end.
+#[test]
+fn send_backward_undo_and_redo_are_bounded() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 80, "depth": 8, "background": "transparent"})).unwrap();
+    let _a = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    select_all(&mut s, &[b]);
+    // Either layer of the swapped pair is the one that moved.
+    let r = bounded_step(&mut s, "layer.arrange.sendBackward", json!({}));
+    assert!(r == Rect::new(20, 20, 50, 50) || r == Rect::new(10, 10, 30, 30), "{r:?}");
+    let _c = rect_layer(&mut s, Rect::new(60, 60, 70, 70));
+    let adj = adjustment(&mut s, "invert");
+    select_all(&mut s, &[adj]);
+    bounded_step(&mut s, "layer.arrange.sendBackward", json!({}));
+}
+
+/// #9329: clipping a layer to the one beneath damages it and the layers clipped to it
+/// (they change base), on undo and redo too.
+#[test]
+fn clipping_a_layer_damages_it_and_the_clipped_run_above() {
+    let mut s = session(8);
+    let _a = rect_layer(&mut s, Rect::new(10, 10, 40, 40));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 60, 50));
+    let c = rect_layer(&mut s, Rect::new(30, 15, 70, 45));
+    s.execute("layer.setProps", json!({"layer": c.0, "clipped": true})).unwrap();
+    let r = bounded_step(&mut s, "layer.setProps", json!({"layer": b.0, "clipped": true}));
+    assert_eq!(r, Rect::new(20, 15, 70, 50));
+}
+
+/// #9329: excluding a channel from a pixel layer's blend damages only where it draws.
+#[test]
+fn excluding_a_channel_damages_only_the_layer() {
+    let mut s = session(8);
+    let _a = rect_layer(&mut s, Rect::new(10, 10, 40, 40));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 60, 50));
+    let r = bounded_step(&mut s, "layer.setProps", json!({"layer": b.0, "channels": [true, false, true]}));
+    assert_eq!(r, Rect::new(20, 20, 60, 50));
 }
 
 #[test]
