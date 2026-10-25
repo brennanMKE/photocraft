@@ -1383,8 +1383,9 @@ fn redraw_area_scenarios(b: &mut Bench, sz: &Sizes) {
 }
 
 /// #9329 PR C: the whole app (kittest harness, CPU canvas) with a 24 MP photo. Each sample runs
-/// Paste Into a 5 % selection (untimed), then times the next frame. Paste Into is a compound
-/// command (several revisions), so the frame's refresh goes through the real `damage_since` path.
+/// Paste Into a 5 % selection (untimed, after a frame that shows the selection), then times the
+/// next frame. Paste Into is a compound command (several revisions), so the frame's refresh goes
+/// through the real `damage_since` path.
 fn paste_into_frame_scenario(b: &mut Bench, name: &str, w: u32, h: u32) {
     // 0.224² ≈ 5 % of the canvas.
     let sel = json!({"x": w / 2, "y": h / 2, "width": w * 224 / 1000, "height": h * 224 / 1000});
@@ -1412,9 +1413,13 @@ fn paste_into_frame_scenario(b: &mut Bench, name: &str, w: u32, h: u32) {
         for i in 0..=b.reps.max(1) {
             let rev = |h: &egui_kittest::Harness<'_, photocraft_ui_egui::PhotocraftApp>| h.state().session.active().map(|d| d.revision);
             // Untimed: Paste Into turns the selection into the pasted layer's
-            // mask, so each sample re-creates the same ~5 % selection. The
-            // clipboard is not consumed.
+            // mask, so each sample re-creates the same ~5 % selection (the
+            // clipboard is not consumed), and shows it for a frame, as the app
+            // does between a selection and the next command. Without that frame
+            // the canvas would last have shown the revision before `select.rect`,
+            // two commands back, and redraw everything whatever Paste Into reports.
             harness.state_mut().run("select.rect", sel.clone())?;
+            harness.step();
             let before = rev(&harness).ok_or("no document")?;
             harness.state_mut().run("edit.pasteSpecial.pasteInto", json!({}))?;
             let after = rev(&harness).ok_or("no document")?;
