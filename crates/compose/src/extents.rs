@@ -426,6 +426,11 @@ fn join(a: Rect, b: Rect) -> Rect {
 ///
 /// `ancestors` are the lists holding the groups around `layers`, outermost first; `depth` is the
 /// document's, which decides whether adjustments round the backdrop ([`adjustment_quantum`]).
+///
+/// The result is an **in-place** bound: what changes if the layer changes where it is. For an
+/// adjustment it covers the layers beneath it (or its clip base), which don't move with it, so it
+/// must never be translated, as a Move drag preview would. Use the context-free [`change_bounds`],
+/// which moves with the layer, for that.
 pub fn change_bounds_in(layers: &[Layer], k: usize, ancestors: &Ancestors, depth: photocraft_color::SampleType, canvas: Rect) -> Option<Rect> {
     let layer = layers.get(k)?;
     if layer.clipped && matches!(layer.content, LayerContent::Adjustment(_)) {
@@ -481,11 +486,24 @@ pub fn adjustment_reach(layers: &[Layer], k: usize, ancestors: &Ancestors, depth
     }
     let mask = adjustment_quantum(depth).is_none().then(|| adjustment_mask_bounds(layer)).flatten();
     let below = beneath(layers, k, ancestors, canvas);
-    match (mask, below) {
-        (Some(m), Some(b)) => Some(m.intersect(&b).intersect(&canvas)),
-        (Some(m), None) => Some(m.intersect(&canvas)),
-        (None, b) => b,
+    let reach = match (mask, below) {
+        (Some(m), Some(b)) => m.intersect(&b).intersect(&canvas),
+        (Some(m), None) => m.intersect(&canvas),
+        (None, b) => b?,
+    };
+    // A pass-through group that is a clip base renders isolated while it holds a visible
+    // adjustment, so showing or hiding the last one switches how the whole group composites: the
+    // two agree outside `beneath` only up to float rounding. The clipped branch of
+    // [`change_bounds_in`] covers the group the same way.
+    if let Some((outer, g)) = ancestors.last()
+        && let Some(group) = outer.get(*g)
+        && group.blend == BlendMode::PassThrough
+        && !group.clipped
+        && outer.get(g + 1).is_some_and(|above| above.clipped)
+    {
+        return Some(join(reach, composite_bounds(group, canvas)?));
     }
+    Some(reach)
 }
 
 /// Where an adjustment's layer mask can let it through: an enabled mask that hides by default at
@@ -547,7 +565,7 @@ pub fn siblings_of(doc: &Document, id: photocraft_doc::LayerId) -> Option<Placem
 }
 
 /// [`change_bounds_in`] of layer `id` where it sits in `doc`, or `None` for anywhere (or no such
-/// layer).
+/// layer). An in-place bound: never translate it (see [`change_bounds_in`]).
 pub fn layer_change_bounds(doc: &Document, id: photocraft_doc::LayerId) -> Option<Rect> {
     let (layers, k, ancestors) = siblings_of(doc, id)?;
     change_bounds_in(layers, k, &ancestors, doc.depth, doc.bounds())

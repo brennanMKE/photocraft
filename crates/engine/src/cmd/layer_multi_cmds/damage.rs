@@ -381,9 +381,9 @@ pub fn selection_only_change(a: &Document, b: &Document) -> bool {
 /// [`one_sided_bounds`]); one that draws nothing ([`inert_at`]) changes nothing. `None`
 /// (composite everything) when the step touched anything the layer walk cannot bound:
 /// document-level fields the compositor reads (canvas size, mode, depth, profile, global light,
-/// patterns, channels, palettes), layer order and kind changes, layers added or removed that
-/// reach outside their own bounds, layer properties that do (clipping, excluded channels —
-/// what `layer.setProps` already reports as unbounded), and video layers. Inserting a copy of a
+/// patterns, channels, palettes), kind changes, reorders of clipped layers, layers added or
+/// removed that reach outside their own bounds, clipping or channel exclusion on a group, and
+/// video layers. A reorder damages the moved layers at both ends ([`moved_ids`]). Inserting a copy of a
 /// 12 MP layer used to recomposite every layer of the document (#2883, P8/P9 in
 /// `perf/budgets.toml`).
 ///
@@ -634,8 +634,10 @@ fn tile_damage(a: &Layer, b: &Layer) -> Option<Rect> {
 /// (`photocraft_compose::change_bounds_in`: an unclipped adjustment's cover the layers beneath it
 /// in its isolation scope; a clipped adjustment's are its base's), provided it isn't the clipping base
 /// of clipped layers above it (they would change base), and neither it nor anything inside it is
-/// a video layer or excludes channels (both reach outside the layer's bounds, see
-/// [`step_damage`]).
+/// a video layer (it reaches outside the layer's bounds, see [`step_damage`]) or excludes
+/// channels. Channel exclusion is per pixel where the layer draws, so it doesn't actually reach
+/// further (`step_damage` bounds a property change of it that way); here it stays unbounded only
+/// to be conservative.
 fn one_sided_bounds(layers: &[Layer], k: usize, ancestors: &Ancestors, depth: photocraft_color::SampleType, canvas: Rect) -> Option<Rect> {
     fn contained(l: &Layer, depth: usize) -> bool {
         depth < 256 && l.video.is_none() && l.excluded_channels == 0 && l.children().is_none_or(|c| c.iter().all(|c| contained(c, depth + 1)))

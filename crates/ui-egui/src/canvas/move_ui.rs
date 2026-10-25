@@ -136,10 +136,9 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Do
             return None;
         }
         let all = Rect::new(i32::MIN / 2, i32::MIN / 2, i32::MAX / 2, i32::MAX / 2);
-        let bounds = ids.iter().try_fold(Rect::EMPTY, |acc, id| {
-            let (layers, k, ancestors) = photocraft_compose::siblings_of(&doc, *id)?;
-            Some(acc.union(&photocraft_compose::change_bounds_in(layers, k, &ancestors, doc.depth, all)?))
-        });
+        // The context-free bound: it moves with the layer. `change_bounds_in` is an in-place bound
+        // (the layers beneath an adjustment, or a clip base, stay put), so it can't be translated.
+        let bounds = ids.iter().try_fold(Rect::EMPTY, |acc, id| Some(acc.union(&photocraft_compose::change_bounds(doc.layer(*id)?, all)?)));
         let canvas = doc.bounds();
         let moving = with_descendants(&doc, &ids);
         let bounds = bounds.map(|b| moving.iter().filter_map(|id| shape_reach(doc.layer(*id)?, canvas)).fold(b, |acc, r| acc.union(&r)));

@@ -392,6 +392,49 @@ fn clipped_adjustment_in_pass_through_clip_base_damages_its_group() {
     assert_eq!(step_damage(&before, &after), Some(Rect::new(2, 1, 4, 3)));
 }
 
+/// #9329: hiding the last visible unclipped adjustment in a pass-through group that is a clip
+/// base switches the group from isolated to pass-through rendering, which agrees with the old
+/// pixels outside the layers beneath only up to float rounding, so it damages the group too.
+#[test]
+fn unclipped_adjustment_in_pass_through_clip_base_damages_its_group() {
+    use photocraft_doc::{Adjustment, BlendMode};
+    let solid = |name: &str, r: Rect, blend: BlendMode| {
+        let mut l = Layer::raster(name, PixelFormat::RGBA8);
+        l.surface_mut().unwrap().fill_rect(r, &[0.5, 0.3, 0.7, 0.6]);
+        l.blend = blend;
+        l
+    };
+    let mut before = Document::with_background(
+        "t",
+        photocraft_geom::Size::new(10, 8),
+        photocraft_doc::ColorMode::Rgb,
+        photocraft_doc::SampleType::U8,
+        photocraft_color::Color::WHITE,
+    );
+    before.layers.clear();
+    before.layers.push(solid("bg", Rect::new(0, 0, 2, 2), BlendMode::Normal));
+    let a = Layer::new("A", LayerContent::Adjustment(Adjustment::Invert));
+    let mut g = Layer::group("G", vec![solid("P", Rect::new(2, 1, 4, 3), BlendMode::Normal), a, solid("Q", Rect::new(6, 4, 8, 6), BlendMode::Multiply)]);
+    g.blend = BlendMode::PassThrough;
+    before.layers.push(g);
+    let mut x = solid("X", Rect::new(2, 1, 7, 5), BlendMode::Normal);
+    x.clipped = true;
+    before.layers.push(x);
+    let mut after = before.clone();
+    let LayerContent::Group(g) = &mut after.layers[1].content else { panic!("group") };
+    g.children[1].visible = false;
+    // The layers beneath A (0..4 × 0..3) and the group (2..8 × 1..6).
+    let r = Rect::new(0, 0, 8, 6);
+    assert_eq!(step_damage(&before, &after), Some(r));
+    assert_eq!(step_damage(&after, &before), Some(r));
+    assert!(unchanged_outside(&before, &after, r));
+    // Without the layer clipped to the group it stays pass-through: just the layers beneath.
+    before.layers.truncate(2);
+    after.layers.truncate(2);
+    assert_eq!(step_damage(&before, &after), Some(Rect::new(0, 0, 4, 3)));
+    assert!(unchanged_outside(&before, &after, Rect::new(0, 0, 4, 3)));
+}
+
 /// #2883 (P8/P9): a duplicate shares the source's tiles (no pixel copy) and recomposites only
 /// where it draws; undo brings back exactly the old pixels. A copy that becomes the clipping
 /// base of the layers above still recomposites everything.
