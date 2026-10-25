@@ -575,6 +575,8 @@ fn main() -> eframe::Result {
                     // and notice when the device is lost (#3438).
                     app.watch_window_device(&rs.device);
                 }
+                // The window's adapter is known: which one, why, the others and the budget inputs.
+                photocraft_ui_egui::gpu_status::log_adapter_report(&app);
             }
             let fallback_reason = std::env::var("PHOTOCRAFT_GPU_STARTUP_FAILURE").ok().or_else(|| {
                 (app.perf.gpu_info.canvas == "cpu" && mode != photocraft_engine::prefs::RenderingMode::Cpu)
