@@ -1,4 +1,4 @@
-use super::{Document, Layer, LayerContent, Rect, Session, VideoData};
+use super::{Document, Layer, LayerContent, Rect, VideoData};
 
 /// Calls `f` with the rect of every tile that differs between two surfaces of the same format and
 /// default pixel: a tile only one side has, or a different copy-on-write tile pointer at the same
@@ -572,12 +572,18 @@ fn inert_at(layers: &[Layer], k: usize) -> bool {
         && (l.clipped || layers.get(k + 1).is_none_or(|above| !above.clipped))
 }
 
-/// Report the pixels a command made of more than one edit changed since `before` ([`step_damage`]),
-/// so the canvas recomposites only where its new layers draw instead of the whole document.
-/// A single [`Session::edit`] already reports its own damage: don't call this after one (#5695).
-pub(crate) fn note_insert(s: &mut Session, before: &Document) {
-    let Some(st) = s.active_mut() else { return };
-    st.last_damage = step_damage(before, &st.doc);
+/// How much of the document (percent, rounded down) changed between `a` and `b`, when that is
+/// some but under 25 %: what [`step_damage`] finds, which a command that reported "redraw
+/// everything" (`None`) should have reported instead. `None` when nothing changed (a view-only
+/// change), when it's 25 % or more, or when `step_damage` can't bound it (a canvas-size change).
+#[cfg(any(test, debug_assertions))]
+pub(crate) fn small_change_pct(a: &Document, b: &Document) -> Option<u64> {
+    let d = step_damage(a, b).filter(|d| !d.is_empty())?;
+    let doc = b.bounds();
+    let whole = u64::from(doc.width()) * u64::from(doc.height());
+    let changed = d.intersect(&doc);
+    let pct = u64::from(changed.width()) * u64::from(changed.height()) * 100 / whole.max(1);
+    (pct < 25).then_some(pct)
 }
 
 /// Content bounds used by Align/Distribute: the layer's pixels (type and shape layers use their
