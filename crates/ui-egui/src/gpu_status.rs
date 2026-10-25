@@ -174,8 +174,13 @@ pub fn fall_back(app: &mut PhotocraftApp, fault: &photocraft_gpu::Fault) {
 pub struct BudgetInputs {
     /// Physical memory in bytes (`None`: unknown, 16 GB assumed).
     pub ram: Option<u64>,
-    /// The card's own memory in bytes (`None`: not reported; the GPU shares system memory).
+    /// The card's own memory in bytes (`None`: not reported, as for integrated GPUs, and discrete
+    /// cards the platform doesn't report, such as NVIDIA on Linux; the budgets then come from
+    /// system memory).
     pub vram: Option<u64>,
+    /// Whether the adapter is a discrete card (`GpuInfo::device_type`), so an unreported `vram`
+    /// isn't described as shared memory.
+    pub discrete: bool,
     /// Memory Usage, bytes.
     pub memory_usage: u64,
     /// GPU Memory, bytes (0: follow Memory Usage).
@@ -192,6 +197,7 @@ impl BudgetInputs {
         Self {
             ram: crate::gpu_canvas::physical_memory(),
             vram: app.perf.gpu_info.video_memory_mb.map(|mb| mb.saturating_mul(1 << 20)),
+            discrete: app.perf.gpu_info.device_type == "discreteGpu",
             memory_usage: u64::from(performance.memory_usage_mb).saturating_mul(1 << 20),
             gpu_memory: u64::from(performance.gpu_memory_mb).saturating_mul(1 << 20),
             gpu_budget: app.perf.gpu_budget_mb.saturating_mul(1 << 20),
@@ -210,7 +216,14 @@ pub fn budget_lines(b: &BudgetInputs) -> Vec<String> {
     }];
     // A card that reports its memory has a "Graphics memory" line already ([`GpuInfo::lines`]).
     if b.vram.is_none() {
-        v.push(tl!("Graphics memory: not reported (shares system memory)").to_string());
+        v.push(
+            if b.discrete {
+                tl!("Graphics memory: not reported (budgeted from system memory)")
+            } else {
+                tl!("Graphics memory: not reported (shares system memory)")
+            }
+            .to_string(),
+        );
     }
     v.push(crate::i18n::fmt(tl!("Memory Usage: {size}"), &[("size", &size(b.memory_usage))]));
     v.push(if b.gpu_memory > 0 {
@@ -442,7 +455,8 @@ mod tests {
     fn diagnostics_report_names_the_budget_inputs() {
         const G: u64 = 1 << 30;
         // An integrated GPU (#9010): no memory of its own, GPU Memory following Memory Usage.
-        let shared = BudgetInputs { ram: Some(16 * G), vram: None, memory_usage: 8 * G, gpu_memory: 0, gpu_budget: 2 * G, canvas_budget: Some(4 * G) };
+        let shared =
+            BudgetInputs { ram: Some(16 * G), vram: None, discrete: false, memory_usage: 8 * G, gpu_memory: 0, gpu_budget: 2 * G, canvas_budget: Some(4 * G) };
         assert_eq!(
             en(|| budget_lines(&shared)),
             [
@@ -456,8 +470,12 @@ mod tests {
         );
         // A discrete card names its memory in the adapter lines; a fixed GPU Memory; nothing
         // computed yet, and no GPU canvas.
-        let card = BudgetInputs { ram: None, vram: Some(8 * G), memory_usage: 4 * G, gpu_memory: G, gpu_budget: 0, canvas_budget: None };
+        let card = BudgetInputs { ram: None, vram: Some(8 * G), discrete: true, memory_usage: 4 * G, gpu_memory: G, gpu_budget: 0, canvas_budget: None };
         assert_eq!(en(|| budget_lines(&card)), ["System memory: unknown (16 GB assumed)", "Memory Usage: 4.0G", "GPU Memory: 1.0G"]);
+        // A discrete card the platform doesn't report (NVIDIA on Linux) doesn't share system
+        // memory: its budgets are only taken from it.
+        let unreported = BudgetInputs { vram: None, ..card };
+        assert_eq!(en(|| budget_lines(&unreported))[1], "Graphics memory: not reported (budgeted from system memory)");
         // The app's report carries them, from the preferences and the computed budget.
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.perf.gpu_budget_mb = 512;
@@ -483,6 +501,16 @@ mod tests {
         let report = diagnostics_report(&app);
         assert!(report.iter().any(|l| l == "Why this adapter: the automatic choice"), "{report:?}");
         assert!(report.iter().any(|l| l == "Other graphics adapters: NVIDIA RTX, Microsoft Basic Render Driver"), "{report:?}");
+        // Picked by Preferences › Performance › Graphics Adapter: the request names it.
+        app.perf.gpu_info.requested_adapter = Some("intel uhd".into());
+        assert!(diagnostics_report(&app).iter().any(|l| l == "Why this adapter: the Graphics Adapter preference (\"intel uhd\")"));
+        // A request this adapter doesn't match isn't the reason (a missed one is a fallback note);
+        // the automatic choice within a chosen backend says so.
+        app.perf.gpu_info.requested_adapter = Some("nvidia".into());
+        app.perf.gpu_info.selected = "vulkan".into();
+        assert!(diagnostics_report(&app).iter().any(|l| l == "Why this adapter: the automatic choice, vulkan only"));
+        app.perf.gpu_info.requested_adapter = None;
+        assert_eq!(serde_json::to_value(&app.perf.gpu_info).unwrap()["requestedAdapter"], serde_json::Value::Null);
         // A startup note explains the pick instead (gpu_startup's note lands in `fallback`).
         let note = "Intel graphics on Windows: using DirectX 12 (the Intel Vulkan driver is known to crash)";
         app.perf.gpu_info.fallback = Some(note.into());
