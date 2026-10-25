@@ -32,6 +32,16 @@ pub fn open(app: &mut PhotocraftApp, ctx: &egui::Context, url: &str) -> Value {
     json!({"url": url})
 }
 
+/// Help › Report an Issue: copy the diagnostics report (Help › System Info ▸ Copy) to the
+/// clipboard, then open the issues page, and say so in the status bar.
+pub fn report_issue(app: &mut PhotocraftApp, ctx: &egui::Context) -> Value {
+    ctx.copy_text(crate::gpu_status::diagnostics_report(app).join("\n"));
+    let r = open(app, ctx, ISSUES);
+    let template = "Opened {url}. System Info was copied to the clipboard: paste it into the issue.";
+    app.ui.status = crate::i18n::fmt(tl!(template), &[("url", ISSUES)]);
+    r
+}
+
 /// The prominent "Join us on Discord" button.
 pub fn discord_button(app: &mut PhotocraftApp, ui: &mut egui::Ui, min_width: f32) -> egui::Response {
     let r = crate::widgets::primary_button(ui, tl!("Join us on Discord"), min_width).on_hover_text(DISCORD);
@@ -119,6 +129,33 @@ mod tests {
         for (id, _) in COMMANDS {
             assert!(crate::menus::is_live(id) && crate::menus::is_enabled(&app, id), "{id}");
         }
+    }
+
+    #[test]
+    fn report_issue_copies_the_diagnostics_first() {
+        use std::sync::{Arc, Mutex};
+        let opened: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let rec = opened.clone();
+        let services = crate::Services {
+            open_url: Some(Box::new(move |u: &str| {
+                rec.lock().unwrap().push(u.to_string());
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+        app.perf.gpu_info.adapter = "Test GPU".into();
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            crate::menus::invoke(&mut app, ui.ctx(), "help.reportIssue", json!({})).unwrap();
+        });
+        // No renderer here: drop the frame's font atlas upload.
+        out.textures_delta.clear();
+        let copied = out.platform_output.commands.iter().find_map(|c| if let egui::OutputCommand::CopyText(t) = c { Some(t.clone()) } else { None });
+        assert_eq!(copied, Some(crate::gpu_status::diagnostics_report(&app).join("\n")));
+        assert!(copied.is_some_and(|t| t.contains("Graphics adapter: Test GPU")));
+        assert_eq!(opened.lock().unwrap().last().map(String::as_str), Some(ISSUES), "the URL is unchanged");
+        assert!(app.ui.status.contains("System Info was copied to the clipboard"), "{}", app.ui.status);
     }
 
     #[test]
