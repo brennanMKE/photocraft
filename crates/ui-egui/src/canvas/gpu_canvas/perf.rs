@@ -196,6 +196,19 @@ impl GpuInfo {
                 crate::i18n::fmt(tl!(template), &[("reason", l)])
             });
         }
+        // Why this adapter, when no fallback note already says: the preference or the automatic
+        // pick. Then the ones it could have used instead (#8332: the wrong adapter picked).
+        if self.fallback.is_none() && !self.adapter.is_empty() {
+            let why = if self.selected.is_empty() || self.selected == "auto" { "the automatic choice" } else { "the GPU backend preference" };
+            let template = "Why this adapter: {reason}";
+            v.push(crate::i18n::fmt(tl!(template), &[("reason", tl!(why))]));
+        }
+        if !self.adapters.is_empty() {
+            let others: Vec<&str> = self.adapters.iter().map(String::as_str).filter(|a| *a != self.adapter).collect();
+            let list = if others.is_empty() { tl!("none").to_string() } else { others.join(", ") };
+            let template = "Other graphics adapters: {adapters}";
+            v.push(crate::i18n::fmt(tl!(template), &[("adapters", &list)]));
+        }
         v
     }
 }

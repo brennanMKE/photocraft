@@ -153,7 +153,7 @@ impl RenderPath {
     }
 
     /// The changes, oldest first.
-    pub fn history(&self) -> impl Iterator<Item = &Change> {
+    pub fn history(&self) -> impl DoubleEndedIterator<Item = &Change> {
         self.history.iter()
     }
 
@@ -346,6 +346,33 @@ pub fn inspect(app: &PhotocraftApp) -> Value {
     let current = active.and_then(|d| app.render_path.current(d).map(|r| reason_json(d, Some(r))));
     let history: Vec<Value> = app.render_path.history().map(change_json).collect();
     json!({"current": current, "history": history})
+}
+
+/// The diagnostics report's render-path lines (Help › System Info, `gpu_status`): the active
+/// document's path, then the history, newest first.
+pub fn report_lines(app: &PhotocraftApp) -> Vec<String> {
+    let doc = app.session.active().map_or(0, |st| st.doc.id.0);
+    let mut v = vec![match app.render_path.current(doc) {
+        Some(r) => {
+            let template = "Render path: CPU ({kind}: {detail})";
+            crate::i18n::fmt(tl!(template), &[("kind", r.kind()), ("detail", &r.to_string())])
+        }
+        None => tl!("Render path: GPU").to_string(),
+    }];
+    let n = app.render_path.history.len().to_string();
+    let template = "Render path changes: {count}";
+    v.push(crate::i18n::fmt(tl!(template), &[("count", &n)]));
+    for c in app.render_path.history().rev() {
+        let who = if c.doc == 0 { "all documents".to_string() } else { doc_name(app, c.doc) };
+        let what = match (&c.reason, c.preview) {
+            (Some(r), true) => r.to_string(),
+            (None, true) => "adjustment preview no longer uses the CPU proxy".to_string(),
+            (Some(r), false) => format!("CPU ({}: {r})", r.kind()),
+            (None, false) => "back on the GPU".to_string(),
+        };
+        v.push(format!("  {:.0} ms: {who}: {what}", c.t_ms));
+    }
+    v
 }
 
 #[cfg(test)]
