@@ -52,6 +52,9 @@ impl PhotocraftApp {
         // Finish or expire outstanding captures first, so a new request admitted in this pass
         // sees their released budget.
         self.drain_captures(ctx);
+        // Report an Issue's page, once the call that copied the report has delivered it. Here in
+        // `logic`, which a hidden window still runs, and before control commands can queue one.
+        crate::links::open_pending(self, ctx);
         self.drain_control(ctx);
         native_menu::run(self, ctx);
         // Switching tools commits, also between the Type and Type Mask tools.
@@ -175,8 +178,6 @@ impl PhotocraftApp {
         self.perf.stage.ui_start(t0, frame.info().cpu_usage);
         // A software adapter or CPU mode chosen at startup is every document's reason.
         crate::render_path::frame(self);
-        // Report an Issue's page, once the frame that copied the report has ended.
-        crate::links::open_pending(self, &ctx);
         // Every frame that started its stage record closes it, whichever way `ui_body` returns.
         let drawn = self.ui_body(ui);
         let ui_ms = gpu_canvas::now_ms() - t0;
