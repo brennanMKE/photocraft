@@ -175,6 +175,8 @@ impl PhotocraftApp {
         self.perf.stage.ui_start(t0, frame.info().cpu_usage);
         // A software adapter or CPU mode chosen at startup is every document's reason.
         crate::render_path::frame(self);
+        // Report an Issue's page, once the frame that copied the report has ended.
+        crate::links::open_pending(self, &ctx);
         // Every frame that started its stage record closes it, whichever way `ui_body` returns.
         let drawn = self.ui_body(ui);
         let ui_ms = gpu_canvas::now_ms() - t0;

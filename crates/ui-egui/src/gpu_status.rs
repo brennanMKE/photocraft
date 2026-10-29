@@ -504,6 +504,11 @@ mod tests {
         // Picked by Preferences › Performance › Graphics Adapter: the request names it.
         app.perf.gpu_info.requested_adapter = Some("intel uhd".into());
         assert!(diagnostics_report(&app).iter().any(|l| l == "Why this adapter: the Graphics Adapter preference (\"intel uhd\")"));
+        // Picked by PHOTOCRAFT_GPU_ADAPTER for this launch: the override, not the preference.
+        app.perf.gpu_info.requested_adapter_env = true;
+        let report = diagnostics_report(&app);
+        assert!(report.iter().any(|l| l == "Why this adapter: the PHOTOCRAFT_GPU_ADAPTER environment override (\"intel uhd\")"), "{report:?}");
+        app.perf.gpu_info.requested_adapter_env = false;
         // A request this adapter doesn't match isn't the reason (a missed one is a fallback note);
         // the automatic choice within a chosen backend says so.
         app.perf.gpu_info.requested_adapter = Some("nvidia".into());

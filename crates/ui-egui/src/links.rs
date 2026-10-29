@@ -34,8 +34,39 @@ pub fn open(app: &mut PhotocraftApp, ctx: &egui::Context, url: &str) -> Value {
 
 /// Help › Report an Issue: copy the diagnostics report (Help › System Info ▸ Copy) to the
 /// clipboard, then open the issues page, and say so in the status bar.
+///
+/// `copy_text` only queues the copy: the platform delivers it after this frame. The `open_url`
+/// service opens at once, so it waits for a later frame ([`open_pending`]) and the page never
+/// comes up before the clipboard holds the report. Without the service, `ctx.open_url` queues
+/// behind the copy in the same frame's output (and keeps the click's gesture on the web).
 pub fn report_issue(app: &mut PhotocraftApp, ctx: &egui::Context) -> Value {
     ctx.copy_text(crate::gpu_status::diagnostics_report(app).join("\n"));
+    if app.services.open_url.is_none() {
+        return open_issues(app, ctx);
+    }
+    let frame = ctx.cumulative_frame_nr_for(egui::ViewportId::ROOT);
+    ctx.data_mut(|d| d.insert_temp(pending_id(), frame));
+    ctx.request_repaint();
+    json!({"url": ISSUES})
+}
+
+/// Each frame: open the issues page [`report_issue`] queued, once a frame has ended since (its
+/// output, the copy, delivered). Not in a later pass of the same frame.
+pub fn open_pending(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    let Some(queued) = ctx.data(|d| d.get_temp::<u64>(pending_id())) else { return };
+    if ctx.cumulative_frame_nr_for(egui::ViewportId::ROOT) <= queued {
+        ctx.request_repaint();
+        return;
+    }
+    ctx.data_mut(|d| d.remove::<u64>(pending_id()));
+    open_issues(app, ctx);
+}
+
+fn pending_id() -> egui::Id {
+    egui::Id::unique("links::report_issue")
+}
+
+fn open_issues(app: &mut PhotocraftApp, ctx: &egui::Context) -> Value {
     let r = open(app, ctx, ISSUES);
     let template = "Opened {url}. System Info was copied to the clipboard: paste it into the issue.";
     app.ui.status = crate::i18n::fmt(tl!(template), &[("url", ISSUES)]);
@@ -101,6 +132,11 @@ mod tests {
         // Every Help-menu link id reaches the service with its URL.
         for (id, url) in COMMANDS {
             crate::menus::invoke(&mut app, &ctx, id, json!({})).unwrap();
+            // Report an Issue opens once its copy is delivered (`report_issue_copies_the_diagnostics_first`).
+            if *id == "help.reportIssue" {
+                ctx.run_ui(Default::default(), |_| {}).textures_delta.clear();
+                open_pending(&mut app, &ctx);
+            }
             assert_eq!(opened.lock().unwrap().last().map(String::as_str), Some(*url), "{id}");
         }
         // The direct open() helper (Discord button / start-page links) also uses it.
@@ -148,13 +184,20 @@ mod tests {
         let ctx = egui::Context::default();
         let mut out = ctx.run_ui(Default::default(), |ui| {
             crate::menus::invoke(&mut app, ui.ctx(), "help.reportIssue", json!({})).unwrap();
+            // A later pass of the same frame: its output (the copy) isn't delivered yet.
+            open_pending(&mut app, ui.ctx());
         });
         // No renderer here: drop the frame's font atlas upload.
         out.textures_delta.clear();
         let copied = out.platform_output.commands.iter().find_map(|c| if let egui::OutputCommand::CopyText(t) = c { Some(t.clone()) } else { None });
         assert_eq!(copied, Some(crate::gpu_status::diagnostics_report(&app).join("\n")));
         assert!(copied.is_some_and(|t| t.contains("Graphics adapter: Test GPU")));
-        assert_eq!(opened.lock().unwrap().last().map(String::as_str), Some(ISSUES), "the URL is unchanged");
+        assert!(opened.lock().unwrap().is_empty(), "the page waits for the copy to be delivered");
+        // The next frame, after the platform handled the copy, opens it.
+        ctx.run_ui(Default::default(), |ui| open_pending(&mut app, ui.ctx())).textures_delta.clear();
+        assert_eq!(opened.lock().unwrap().as_slice(), [ISSUES.to_string()], "the URL is unchanged, opened once");
+        ctx.run_ui(Default::default(), |ui| open_pending(&mut app, ui.ctx())).textures_delta.clear();
+        assert_eq!(opened.lock().unwrap().len(), 1);
         assert!(app.ui.status.contains("System Info was copied to the clipboard"), "{}", app.ui.status);
     }
 

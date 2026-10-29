@@ -353,6 +353,12 @@ pub fn inspect(app: &PhotocraftApp) -> Value {
 pub fn report_lines(app: &PhotocraftApp) -> Vec<String> {
     let doc = app.session.active().map_or(0, |st| st.doc.id.0);
     let mut v = vec![match app.render_path.current(doc) {
+        // A software adapter still runs the GPU canvas: the GPU path, drawn in software. Without
+        // a GPU canvas (CPU mode on one), it is the CPU path.
+        Some(r @ CpuReason::SoftwareAdapter) if has_gpu_canvas(app) => {
+            let template = "Render path: GPU ({kind}: {detail})";
+            crate::i18n::fmt(tl!(template), &[("kind", r.kind()), ("detail", &r.to_string())])
+        }
         Some(r) => {
             let template = "Render path: CPU ({kind}: {detail})";
             crate::i18n::fmt(tl!(template), &[("kind", r.kind()), ("detail", &r.to_string())])
@@ -544,6 +550,26 @@ mod tests {
         note_app(&mut app, None);
         frame(&mut app);
         assert_eq!(app.render_path.current(1), Some(&CpuReason::SoftwareAdapter), "after Retry GPU");
+    }
+
+    /// The report names a software adapter running the GPU canvas as the GPU path, qualified;
+    /// without a GPU canvas (CPU mode on a software adapter) it is the CPU path.
+    #[test]
+    fn report_lines_name_a_software_adapter_gpu_canvas_as_gpu() {
+        let mut app = app();
+        app.render_path.assume_gpu = true;
+        app.perf.gpu_info.device_type = "cpu".into();
+        app.perf.gpu_info.canvas = "gpu".into();
+        frame(&mut app);
+        let line = &report_lines(&app)[0];
+        assert_eq!(line, "Render path: GPU (softwareAdapter: the graphics adapter is a software renderer)");
+
+        let mut app = self::app();
+        app.perf.gpu_info.device_type = "cpu".into();
+        app.perf.gpu_info.canvas = "cpu".into();
+        frame(&mut app);
+        let line = &report_lines(&app)[0];
+        assert_eq!(line, "Render path: CPU (softwareAdapter: the graphics adapter is a software renderer)");
     }
 
     /// A software adapter still runs the GPU canvas, so a document that left even that names its

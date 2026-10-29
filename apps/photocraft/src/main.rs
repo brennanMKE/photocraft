@@ -451,10 +451,12 @@ fn main() -> eframe::Result {
     write_start_marker(&sentinel, &plan);
     let gpu_note: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
     // The adapter's real texture limits (egui asks for 8192 px), so big documents stay on the GPU.
-    let wanted_adapter =
-        gpu_startup::wanted_adapter(std::env::var("PHOTOCRAFT_GPU_ADAPTER").ok().as_deref(), &gpu_startup::read_gpu_adapter(services::prefs_file().as_deref()));
-    // System Info's "Why this adapter" names the request when the adapter matched it.
+    let adapter_env = std::env::var("PHOTOCRAFT_GPU_ADAPTER").ok();
+    let wanted_adapter = gpu_startup::wanted_adapter(adapter_env.as_deref(), &gpu_startup::read_gpu_adapter(services::prefs_file().as_deref()));
+    // System Info's "Why this adapter" names the request, and where it came from, when the adapter
+    // matched it.
     let requested_adapter = gpu_startup::applicable_adapter(wanted_adapter.clone(), plan.backend, gpu_startup::ADAPTER_CHOICE);
+    let requested_adapter_env = gpu_startup::adapter_request_from_env(adapter_env.as_deref());
     gpu_startup::configure(&mut options.wgpu_options.wgpu_setup, &plan, os, wanted_adapter, sentinel.clone(), gpu_note.clone());
     // Preferences › Performance › Low-Latency Drawing (#1343): without vsync a stroke shows about
     // 50 ms sooner; wgpu picks Immediate, else Mailbox, else Fifo by what the driver offers.
@@ -545,6 +547,7 @@ fn main() -> eframe::Result {
                 app.stroke_trace.set(v);
             }
             info.requested_adapter = requested_adapter.clone();
+            info.requested_adapter_env = requested_adapter_env;
             info.selected = if plan.env.is_some() { "env".into() } else { plan.backend.name().to_string() };
             info.fallback = match (plan.reason.clone(), gpu_note.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()) {
                 (Some(reason), Some(note)) => Some(format!("{reason}. {note}")),
