@@ -1337,6 +1337,24 @@ fn a_reorder_inside_a_group_with_a_drop_shadow_damages_the_shadow() {
     assert!(r.contains_rect(&Rect::new(30, 30, 50, 50)), "{r:?}");
 }
 
+/// #9329: deleting a layer inside a group with a drop shadow, and adding it back on undo,
+/// damages the shadow too, which reaches past the layer.
+#[test]
+fn adding_or_deleting_a_layer_inside_a_group_with_a_drop_shadow_damages_the_shadow() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(20, 20, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(50, 40, 60, 50));
+    select_all(&mut s, &[k, b]);
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        doc.layer_mut(g).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        Ok(())
+    })
+    .unwrap();
+    let r = bounded_step(&mut s, "layer.delete", json!({"layer": k.0}));
+    assert!(r.contains_rect(&Rect::new(20, 20, 30, 30)), "{r:?}");
+}
+
 /// #9329: clipping a layer to the one beneath damages it and the layers clipped to it
 /// (they change base), on undo and redo too.
 #[test]

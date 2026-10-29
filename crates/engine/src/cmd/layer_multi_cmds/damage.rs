@@ -416,11 +416,13 @@ pub fn step_damage(a: &Document, b: &Document) -> Option<Rect> {
         out: &mut Rect,
     ) -> bool {
         let depth = b.depth;
+        // The effects of the groups around reach past a change inside them (a parent's drop shadow).
+        let grow = |r: Rect, canvas: Rect| if r.is_empty() { r } else { r.inflate(around.reach).intersect(&canvas) };
         // Pair the layers by id, stepping over layers only one side has: one that draws nothing
         // changes no pixels (a new empty layer or group, #1771), any other only where it draws.
         let one_sided = |layers: &[Layer], k: usize, path: &Ancestors, canvas: Rect, out: &mut Rect| {
             let Some(r) = one_sided_bounds(layers, k, path, depth, canvas) else { return false };
-            add(out, r);
+            add(out, grow(r, canvas));
             true
         };
         // A reorder: the layers that moved change pixels only where they draw (or, for an
@@ -440,8 +442,6 @@ pub fn step_damage(a: &Document, b: &Document) -> Option<Rect> {
             else {
                 return false;
             };
-            // The effects of the groups around reach past it (a parent's drop shadow).
-            let grow = |r: Rect, canvas: Rect| if r.is_empty() { r } else { r.inflate(around.reach).intersect(&canvas) };
             add(out, grow(bx, a.bounds()));
             add(out, grow(by, b.bounds()));
         }
