@@ -181,6 +181,8 @@ fn drop_shadow(distance: f32, size: f32) -> photocraft_doc::Effect {
     }
 }
 
+/// A styled layer inside a styled group: the group's shadow is cast by the child's shadow too, so
+/// a dab's change reaches as far as both shadows together, not just the farther one.
 #[test]
 fn a_dab_inside_a_group_with_a_drop_shadow_damages_the_shadow() {
     let mut s = session(1024, 768);
@@ -188,17 +190,23 @@ fn a_dab_inside_a_group_with_a_drop_shadow_damages_the_shadow() {
     s.execute("layer.select", json!({"layer": child.0})).unwrap();
     let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
     s.edit("fx", |doc, _| {
-        doc.layer_mut(g).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        for id in [child, g] {
+            doc.layer_mut(id).unwrap().effects.items.push(drop_shadow(40.0, 2.0));
+        }
         Ok(())
     })
     .unwrap();
-    assert!(photocraft_compose::effects::margin(doc(&s).layer(g).unwrap()) > 0);
-    // A hole at a tile's right edge: its shadow lands in the next tile.
-    let dab = Rect::new(250, 440, TILE_SIZE, 460);
-    let (before, after) = paint(&mut s, child, dab, [0.0, 0.0, 0.0, 0.0]);
+    assert!(photocraft_compose::effects::margin(doc(&s).layer(g).unwrap()) > 40);
+    // A brush dab (a hinted edit) in empty space left of a tile's right edge. Each shadow falls
+    // about 20 px right and 35 px down, so the group's shadow of the child's shadow lands about
+    // 40 px right and 70 px down, in the next tile and past either shadow's reach alone.
+    s.execute("layer.select", json!({"layer": child.0})).unwrap();
+    let before = doc(&s);
+    s.execute("paint.stroke", json!({"points": [[TILE_SIZE - 30, 300]], "size": 10, "hardness": 1.0, "color": "#0000ff", "layer": child.0})).unwrap();
+    assert_eq!(s.damage_misses, 0);
     let d = damage(&s).expect("a bounded dab");
-    assert!(d.contains_rect(&dab) && d.x1 > TILE_SIZE, "{d:?}");
-    assert!(unchanged_outside(&before, &after, d), "the group's shadow changed outside {d:?}");
+    assert!(d.x0 < TILE_SIZE && d.x1 > TILE_SIZE, "{d:?}");
+    assert!(unchanged_outside(&before, &doc(&s), d), "the group's shadow changed outside {d:?}");
 }
 
 /// A layer the compositor doesn't draw adds nothing to a dab elsewhere: neither a hidden layer's
