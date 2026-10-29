@@ -8,7 +8,8 @@
 //! output lists as `slowFrames`; one `info` log line per second names them. The stroke trace
 //! (`stroke_trace`) reads the same record, so the app times a frame in one place.
 //!
-//! On the web `now_ms()` is 0, so no frame is ever slow and the ring stays empty.
+//! The web build does the same: `now_ms()` is `performance.now()` there, and the log line goes to
+//! the browser console.
 
 use std::collections::VecDeque;
 
