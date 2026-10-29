@@ -513,9 +513,19 @@ pub(crate) fn hint_misses(before: &Document, after: &Document, hint: Rect) -> us
 /// [`step_damage`] grows a change there ([`grow_in_layer`], then by the effects of the groups
 /// around the layer), for whichever layer that was: the hint doesn't say. A brush dab on a
 /// feathered mask changes a soft ring around the dab; cut to the bare dab, the ring stayed stale.
+/// Layers the compositor doesn't draw are skipped as it skips them (a hidden layer, a clipped
+/// layer over a hidden base, and everything inside a hidden group): a change there shows nowhere,
+/// and growing by a hidden layer's effects widened every dab elsewhere.
 pub(crate) fn grow_hint(doc: &Document, hint: Rect) -> Rect {
     fn walk(layers: &[Layer], reach: i32, hint: Rect, out: &mut Rect) {
+        let mut base_visible = true;
         for l in layers {
+            if !l.clipped {
+                base_visible = l.visible;
+            }
+            if !l.visible || !base_visible {
+                continue;
+            }
             let feather = l.mask.as_ref().map_or(0.0, |m| m.feather);
             *out = out.union(&grow_in_layer(l, hint, feather).inflate(reach));
             if let Some(children) = l.children() {

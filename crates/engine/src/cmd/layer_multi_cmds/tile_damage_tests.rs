@@ -173,6 +173,14 @@ fn tile_damage_grows_by_the_layer_effect_margin() {
     assert!(unchanged_outside(&before, &after, d));
 }
 
+/// The default drop shadow, `distance` px away and `size` px soft.
+fn drop_shadow(distance: f32, size: f32) -> photocraft_doc::Effect {
+    match photocraft_doc::Effect::default_drop_shadow() {
+        photocraft_doc::Effect::DropShadow(sh) => photocraft_doc::Effect::DropShadow(photocraft_doc::Shadow { distance, size, ..sh }),
+        e => e,
+    }
+}
+
 #[test]
 fn a_dab_inside_a_group_with_a_drop_shadow_damages_the_shadow() {
     let mut s = session(1024, 768);
@@ -191,6 +199,37 @@ fn a_dab_inside_a_group_with_a_drop_shadow_damages_the_shadow() {
     let d = damage(&s).expect("a bounded dab");
     assert!(d.contains_rect(&dab) && d.x1 > TILE_SIZE, "{d:?}");
     assert!(unchanged_outside(&before, &after, d), "the group's shadow changed outside {d:?}");
+}
+
+/// A layer the compositor doesn't draw adds nothing to a dab elsewhere: neither a hidden layer's
+/// effects nor those of layers inside a hidden group grow the hint.
+#[test]
+fn a_brush_hint_ignores_the_effects_of_hidden_layers() {
+    let mut s = session(1024, 768);
+    let plain = full_layer(&mut s);
+    let hidden = layer_with(&mut s, &[(Rect::new(800, 600, 900, 700), [1.0, 0.0, 0.0, 1.0])]);
+    let child = layer_with(&mut s, &[(Rect::new(50, 600, 150, 700), [0.0, 1.0, 0.0, 1.0])]);
+    s.execute("layer.select", json!({"layer": child.0})).unwrap();
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        for id in [hidden, child] {
+            let l = doc.layer_mut(id).unwrap();
+            l.effects.items.push(drop_shadow(40.0, 40.0));
+        }
+        doc.layer_mut(hidden).unwrap().visible = false;
+        doc.layer_mut(g).unwrap().visible = false;
+        Ok(())
+    })
+    .unwrap();
+    assert!(photocraft_compose::effects::margin(doc(&s).layer(hidden).unwrap()) > 40);
+    // A dab in the middle of a tile, far from every tile edge.
+    s.execute("layer.select", json!({"layer": plain.0})).unwrap();
+    let before = doc(&s);
+    s.execute("paint.stroke", json!({"points": [[384, 384]], "size": 10, "hardness": 1.0, "color": "#0000ff", "layer": plain.0})).unwrap();
+    assert_eq!(s.damage_misses, 0);
+    let d = damage(&s).expect("a bounded dab");
+    assert!(d.contains(384, 384) && d.width() <= 20 && d.height() <= 20, "grown by a hidden layer: {d:?}");
+    assert!(unchanged_outside(&before, &doc(&s), d));
 }
 
 #[test]
