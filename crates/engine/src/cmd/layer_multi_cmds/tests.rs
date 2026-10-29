@@ -1287,6 +1287,56 @@ fn send_backward_undo_and_redo_are_bounded() {
     bounded_step(&mut s, "layer.arrange.sendBackward", json!({}));
 }
 
+/// #9329: a moved group holding a video layer has no bounded damage, as the video layer itself
+/// has none.
+#[test]
+fn bring_forward_on_a_group_holding_a_video_layer_is_unbounded() {
+    let mut s = session(8);
+    let v = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    s.edit("video", |doc, _| {
+        let l = doc.layer_mut(v).unwrap();
+        let frame = l.surface().unwrap().clone();
+        l.video = Some(photocraft_doc::VideoData::new(vec![frame.clone(), frame], 24.0));
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.select", json!({"layer": v.0})).unwrap();
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    let b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    assert_eq!(doc(&s).layers.iter().map(|l| l.id).skip(1).collect::<Vec<_>>(), vec![g, b]);
+    select_all(&mut s, &[g]);
+    s.execute("layer.arrange.bringForward", json!({})).unwrap();
+    assert_eq!(doc(&s).layers.iter().map(|l| l.id).skip(1).collect::<Vec<_>>(), vec![b, g]);
+    assert_eq!(damage(&s), None);
+}
+
+/// #9329: reordering inside a group with a drop shadow damages the shadow too. The moved layer
+/// knocks out the one beneath it, so the group's shape, and with it the shadow, changes.
+#[test]
+fn a_reorder_inside_a_group_with_a_drop_shadow_damages_the_shadow() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(30, 30, 50, 50));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    s.edit("knockout", |doc, _| {
+        let l = doc.layer_mut(k).unwrap();
+        l.advanced.knockout = photocraft_doc::Knockout::Shallow;
+        l.fill_opacity = 0.0;
+        Ok(())
+    })
+    .unwrap();
+    select_all(&mut s, &[k, b]);
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        doc.layer_mut(g).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(doc(&s).layer(g).unwrap().children().unwrap().iter().map(|l| l.id).collect::<Vec<_>>(), vec![k, b]);
+    select_all(&mut s, &[k]);
+    let r = bounded_step(&mut s, "layer.arrange.bringForward", json!({}));
+    assert!(r.contains_rect(&Rect::new(30, 30, 50, 50)), "{r:?}");
+}
+
 /// #9329: clipping a layer to the one beneath damages it and the layers clipped to it
 /// (they change base), on undo and redo too.
 #[test]

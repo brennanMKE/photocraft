@@ -432,7 +432,7 @@ pub fn step_damage(a: &Document, b: &Document) -> Option<Rect> {
             // A clipped layer changes base when it moves, and a layer moving to or from below
             // clipped layers changes theirs.
             let clips = |ls: &[Layer], k: usize| ls[k].clipped || ls.get(k + 1).is_some_and(|above| above.clipped);
-            if clips(xs, xk) || clips(ys, yk) || x.video.is_some() || y.video.is_some() {
+            if clips(xs, xk) || clips(ys, yk) || !contained(x, 0) || !contained(y, 0) {
                 return false;
             }
             let (Some(bx), Some(by)) =
@@ -440,8 +440,10 @@ pub fn step_damage(a: &Document, b: &Document) -> Option<Rect> {
             else {
                 return false;
             };
-            add(out, bx);
-            add(out, by);
+            // The effects of the groups around reach past it (a parent's drop shadow).
+            let grow = |r: Rect, canvas: Rect| if r.is_empty() { r } else { r.inflate(around.reach).intersect(&canvas) };
+            add(out, grow(bx, a.bounds()));
+            add(out, grow(by, b.bounds()));
         }
         let (mut i, mut j) = (0, 0);
         loop {
@@ -630,6 +632,11 @@ fn tile_damage(a: &Layer, b: &Layer) -> Option<Rect> {
     Some(if tiles.is_empty() || margin == 0 { tiles } else { tiles.inflate(margin) })
 }
 
+/// Neither `l` nor anything inside it is a video layer or excludes channels.
+fn contained(l: &Layer, depth: usize) -> bool {
+    depth < 256 && l.video.is_none() && l.excluded_channels == 0 && l.children().is_none_or(|c| c.iter().all(|c| contained(c, depth + 1)))
+}
+
 /// The pixels adding or removing `layers[k]` can change, when that is bounded: its change bounds
 /// (`photocraft_compose::change_bounds_in`: an unclipped adjustment's cover the layers beneath it
 /// in its isolation scope; a clipped adjustment's are its base's), provided it isn't the clipping base
@@ -639,9 +646,6 @@ fn tile_damage(a: &Layer, b: &Layer) -> Option<Rect> {
 /// further (`step_damage` bounds a property change of it that way); here it stays unbounded only
 /// to be conservative.
 fn one_sided_bounds(layers: &[Layer], k: usize, ancestors: &Ancestors, depth: photocraft_color::SampleType, canvas: Rect) -> Option<Rect> {
-    fn contained(l: &Layer, depth: usize) -> bool {
-        depth < 256 && l.video.is_none() && l.excluded_channels == 0 && l.children().is_none_or(|c| c.iter().all(|c| contained(c, depth + 1)))
-    }
     let l = layers.get(k)?;
     let new_base = !l.clipped && layers.get(k + 1).is_some_and(|above| above.clipped);
     if new_base || !contained(l, 0) {
