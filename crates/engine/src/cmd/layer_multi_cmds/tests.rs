@@ -1355,6 +1355,57 @@ fn adding_or_deleting_a_layer_inside_a_group_with_a_drop_shadow_damages_the_shad
     assert!(r.contains_rect(&Rect::new(20, 20, 30, 30)), "{r:?}");
 }
 
+/// A group holding `layers`, with a drop shadow that reaches about 8 px down and right of them.
+fn shadowed_group(s: &mut Session, layers: &[LayerId]) -> LayerId {
+    select_all(s, layers);
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        doc.layer_mut(g).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        Ok(())
+    })
+    .unwrap();
+    g
+}
+
+/// [`bounded_step`] for a step that must change canvas pixels, so it can't pass vacuously.
+fn bounded_visible_step(s: &mut Session, id: &str, p: serde_json::Value) -> Rect {
+    let before = photocraft_compose::render(doc(s), doc(s).bounds());
+    let r = bounded_step(s, id, p);
+    assert_ne!(photocraft_compose::render(doc(s), doc(s).bounds()).px, before.px, "{id}: no canvas pixel changed");
+    r
+}
+
+/// #9329: deleting a layer just off the canvas inside a group whose drop shadow reaches onto
+/// it, and adding it back on undo, damages the shadow on the canvas.
+#[test]
+fn deleting_an_off_canvas_layer_damages_its_group_shadow_on_the_canvas() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(-10, 20, -1, 30));
+    let b = rect_layer(&mut s, Rect::new(50, 40, 60, 50));
+    shadowed_group(&mut s, &[k, b]);
+    bounded_visible_step(&mut s, "layer.delete", json!({"layer": k.0}));
+}
+
+/// #9329: reordering a layer just off the canvas inside a group whose drop shadow reaches onto
+/// it damages the shadow on the canvas. The moved layer knocks out the one beneath it, so the
+/// group's shape, and with it the shadow, changes.
+#[test]
+fn reordering_an_off_canvas_layer_damages_its_group_shadow_on_the_canvas() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(-9, 25, -1, 35));
+    let b = rect_layer(&mut s, Rect::new(-14, 20, -1, 40));
+    s.edit("knockout", |doc, _| {
+        let l = doc.layer_mut(k).unwrap();
+        l.advanced.knockout = photocraft_doc::Knockout::Shallow;
+        l.fill_opacity = 0.0;
+        Ok(())
+    })
+    .unwrap();
+    shadowed_group(&mut s, &[k, b]);
+    select_all(&mut s, &[k]);
+    bounded_visible_step(&mut s, "layer.arrange.bringForward", json!({}));
+}
+
 /// #9329: clipping a layer to the one beneath damages it and the layers clipped to it
 /// (they change base), on undo and redo too.
 #[test]

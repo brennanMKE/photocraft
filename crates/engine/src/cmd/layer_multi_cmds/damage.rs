@@ -418,10 +418,13 @@ pub fn step_damage(a: &Document, b: &Document) -> Option<Rect> {
         let depth = b.depth;
         // The effects of the groups around reach past a change inside them (a parent's drop shadow).
         let grow = |r: Rect, canvas: Rect| if r.is_empty() { r } else { r.inflate(around.reach).intersect(&canvas) };
+        // So bound a change within that reach of the canvas, not on it: a layer just off the
+        // canvas still moves a parent's shadow onto it (group effects are built past the canvas).
+        let near = |canvas: Rect| canvas.inflate(around.reach);
         // Pair the layers by id, stepping over layers only one side has: one that draws nothing
         // changes no pixels (a new empty layer or group, #1771), any other only where it draws.
         let one_sided = |layers: &[Layer], k: usize, path: &Ancestors, canvas: Rect, out: &mut Rect| {
-            let Some(r) = one_sided_bounds(layers, k, path, depth, canvas) else { return false };
+            let Some(r) = one_sided_bounds(layers, k, path, depth, near(canvas)) else { return false };
             add(out, grow(r, canvas));
             true
         };
@@ -437,9 +440,10 @@ pub fn step_damage(a: &Document, b: &Document) -> Option<Rect> {
             if clips(xs, xk) || clips(ys, yk) || !contained(x, 0) || !contained(y, 0) {
                 return false;
             }
-            let (Some(bx), Some(by)) =
-                (photocraft_compose::change_bounds_in(xs, xk, px, depth, a.bounds()), photocraft_compose::change_bounds_in(ys, yk, py, depth, b.bounds()))
-            else {
+            let (Some(bx), Some(by)) = (
+                photocraft_compose::change_bounds_in(xs, xk, px, depth, near(a.bounds())),
+                photocraft_compose::change_bounds_in(ys, yk, py, depth, near(b.bounds())),
+            ) else {
                 return false;
             };
             add(out, grow(bx, a.bounds()));
