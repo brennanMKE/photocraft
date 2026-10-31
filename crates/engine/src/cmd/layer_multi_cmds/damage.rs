@@ -509,21 +509,23 @@ pub fn step_damage(a: &Document, b: &Document) -> Option<Rect> {
                 }
                 for (ls, k, path, d) in [(xs, xk, px, a), (ys, yk, py, b)] {
                     for c in (k + 1..ls.len()).take_while(|&c| ls[c].clipped) {
-                        let Some(r) = photocraft_compose::change_bounds_in(ls, c, path, depth, d.bounds()) else { return false };
-                        add(out, r);
+                        let Some(r) = photocraft_compose::change_bounds_in(ls, c, path, depth, near(d.bounds())) else { return false };
+                        add(out, grow(r, d.bounds()));
                     }
                 }
             }
             let tiles = tile_damage(x, y);
             if tiles != Some(Rect::EMPTY) {
                 // Both sides' extents: a move changes pixels where it left and where it landed.
-                // A clipped adjustment reaches as far as its base (#6535).
-                let (Some(bx), Some(by)) =
-                    (photocraft_compose::change_bounds_in(xs, xk, px, depth, a.bounds()), photocraft_compose::change_bounds_in(ys, yk, py, depth, b.bounds()))
-                else {
+                // A clipped adjustment reaches as far as its base (#6535). Grown by what the
+                // groups around reach, as any change inside them (a parent's drop shadow).
+                let (Some(bx), Some(by)) = (
+                    photocraft_compose::change_bounds_in(xs, xk, px, depth, near(a.bounds())),
+                    photocraft_compose::change_bounds_in(ys, yk, py, depth, near(b.bounds())),
+                ) else {
                     return false;
                 };
-                let whole = bx.union(&by);
+                let whole = grow(bx, a.bounds()).union(&grow(by, b.bounds()));
                 // Only pixels changed: the changed tiles, grown by what the groups around reach,
                 // never more than the whole extents. Effects laid out over a frame repaint it
                 // everywhere when it moves (#4053), so then the whole extents.
@@ -531,7 +533,7 @@ pub fn step_damage(a: &Document, b: &Document) -> Option<Rect> {
                     || (photocraft_compose::effects::spans_frame(y)
                         && photocraft_compose::effects_frame(x, a.bounds()) != photocraft_compose::effects_frame(y, b.bounds()));
                 let d = match tiles {
-                    Some(t) if !frame_moved => t.inflate(around.reach).intersect(&whole.inflate(around.reach)).intersect(&b.bounds()),
+                    Some(t) if !frame_moved => t.inflate(around.reach).intersect(&whole).intersect(&b.bounds()),
                     _ => whole,
                 };
                 *out = out.union(&d);

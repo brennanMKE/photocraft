@@ -1406,6 +1406,31 @@ fn reordering_an_off_canvas_layer_damages_its_group_shadow_on_the_canvas() {
     bounded_visible_step(&mut s, "layer.arrange.bringForward", json!({}));
 }
 
+/// #9329: unclipping a layer inside a group with a drop shadow exposes its pixels outside its
+/// old base, which moves the group's shadow past the layer; clipping it back, on undo and redo,
+/// too.
+#[test]
+fn clipping_and_unclipping_inside_a_shadowed_group_damages_the_shadow() {
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(20, 20, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(25, 25, 45, 45));
+    s.execute("layer.setProps", json!({"layer": b.0, "clipped": true})).unwrap();
+    shadowed_group(&mut s, &[a, b]);
+    bounded_visible_step(&mut s, "layer.setProps", json!({"layer": b.0, "clipped": false}));
+    bounded_visible_step(&mut s, "layer.setProps", json!({"layer": b.0, "clipped": true}));
+}
+
+/// #9329: a property change on a layer inside a group with a drop shadow changes the shadow,
+/// which reaches past the layer.
+#[test]
+fn a_property_change_inside_a_shadowed_group_damages_the_shadow() {
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(20, 20, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(50, 40, 60, 50));
+    shadowed_group(&mut s, &[a, b]);
+    bounded_visible_step(&mut s, "layer.setProps", json!({"layer": a.0, "opacity": 0.3}));
+}
+
 /// #9329: clipping a layer to the one beneath damages it and the layers clipped to it
 /// (they change base), on undo and redo too.
 #[test]
